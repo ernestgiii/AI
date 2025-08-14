@@ -21,7 +21,7 @@ ecr_delete_repo() {
 }
 
 lambda_create_image() {
-  docker build . -t ${CF_STACK_NAME}:test -f lambda/Dockerfile --platform=linux/amd64
+  docker build . -t ${CF_STACK_NAME}:test -f lambda/Dockerfile --platform=linux/amd64 --provenance=false
   docker tag ${CF_STACK_NAME}:test ${ACCOUNT_ID}.dkr.ecr.${STACK_REGION}.amazonaws.com/${CF_STACK_NAME}:latest
   docker push ${ACCOUNT_ID}.dkr.ecr.${STACK_REGION}.amazonaws.com/${CF_STACK_NAME}:latest
 }

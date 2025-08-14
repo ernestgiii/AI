@@ -12,6 +12,7 @@ Resources:
       RoleArn: !GetAtt KendraRole.Arn
       Edition: "DEVELOPER_EDITION"
   KendraDataSource:
+    DependsOn: KendraIndex
     Type: AWS::Kendra::DataSource
     Properties: 
       DataSourceConfiguration: 
