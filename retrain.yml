@@ -1,0 +1,42 @@
+name: retrain-on-new-data
+on:
+  repository_dispatch:
+    types: [s3-data-arrived]   # must match what Lambda sends
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write          # for AWS OIDC
+      contents: read
+    env:
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+
+      # Configure AWS creds via OIDC (recommended over long-lived keys)
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::251345874268:role/GitHubOIDC-MLops
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install "sagemaker==2.*" "boto3==1.*" "awscli==1.*"
+
+      # Optional: pass S3 prefix from the repo-dispatch payload
+      - name: Show payload
+        run: |
+          echo "S3_PREFIX=${{ github.event.client_payload.s3_prefix }}"
+          echo "S3_BUCKET=${{ github.event.client_payload.s3_bucket }}"
+
+      - name: Kick off SageMaker Pipeline
+        run: |
+          python pipelines/run.py --input-s3 s3://${{ github.event.client_payload.s3_bucket }}/${{ github.event.client_payload.s3_prefix }}
+
+      # Optional deploy step (blue/green)
+      - name: Deploy new model (optional)
+        if: ${{ success() }}
+        run: |
+          python deploy/update_endpoint.py
