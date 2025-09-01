@@ -22,7 +22,7 @@ jobs:
       # Where to write trained artifacts (model.tar.gz)
       OUTPUT_S3: s3://sm-language-detection-us-east-1/language-identification/outputs/
       # Your SageMaker *execution* role (the role training jobs run as)  <-- REPLACE
-      SM_EXECUTION_ROLE_ARN: arn:aws:sagemaker:us-east-1:251345874268:notebook-instance/LMNotebook
+      SM_EXECUTION_ROLE_ARN: arn:aws:iam::251345874268:role/SageMakerIAMRole
 
     steps:
       - uses: actions/checkout@v4
