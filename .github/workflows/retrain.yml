@@ -2,42 +2,97 @@ name: retrain-on-new-data
 
 on:
   repository_dispatch:
-    types: [s3-data-arrived]   # must match what Lambda sends
+    types: [s3-data-arrived]   # must match your Lambda's event_type
+  workflow_dispatch: {}        # optional manual trigger for testing
+
+concurrency:
+  group: retrain-${{ github.event.client_payload.s3_bucket }}-${{ github.event.client_payload.s3_prefix || 'manual' }}
+  cancel-in-progress: true
 
 jobs:
   retrain:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write          # for AWS OIDC
+      id-token: write          # OIDC → AWS
       contents: read
     env:
       AWS_REGION: us-east-1
+      # BlazingText image for us-east-1:
+      BT_IMAGE: 811284229777.dkr.ecr.us-east-1.amazonaws.com/blazingtext:1
+      # Where to write trained artifacts (model.tar.gz)
+      OUTPUT_S3: s3://sm-language-detection-us-east-1/language-identification/outputs/
+      # Your SageMaker *execution* role (the role training jobs run as)  <-- REPLACE
+      SM_EXECUTION_ROLE_ARN: arn:aws:sagemaker:us-east-1:251345874268:notebook-instance/LMNotebook
 
     steps:
       - uses: actions/checkout@v4
 
-      # Configure AWS creds via OIDC (recommended over long-lived keys)
+      # Assume your AWS role via OIDC (no static keys)
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::251345874268:role/GitHubOIDC-MLops
           aws-region: ${{ env.AWS_REGION }}
 
-      # Optional: Python deps (not required for just 'aws s3 ls', but harmless)
-      - name: Python deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install "boto3==1.*" "awscli==1.*"
-
-      # Show the payload we received from Lambda
       - name: Show payload
         run: |
           echo "S3_BUCKET=${{ github.event.client_payload.s3_bucket }}"
           echo "S3_PREFIX=${{ github.event.client_payload.s3_prefix }}"
 
-      #  Option B: simple S3 smoke test (no pipelines/run.py)
-      - name: Smoke test S3 (list files under prefix)
+      - name: Install AWS CLI (and boto3)
         run: |
-          BUCKET="${{ github.event.client_payload.s3_bucket }}"
-          PREFIX="${{ github.event.client_payload.s3_prefix }}"
-          echo "Listing s3://$BUCKET/$PREFIX"
-          aws s3 ls "s3://$BUCKET/$PREFIX" --recursive
+          python -m pip install --upgrade pip
+          pip install "awscli==1.*" "boto3==1.*"
+
+      # ---------- TRAIN ----------
+      - name: Start SageMaker training job (BlazingText)
+        env:
+          BUCKET: ${{ github.event.client_payload.s3_bucket }}
+          PREFIX: ${{ github.event.client_payload.s3_prefix }}
+          JOB_NAME: langid-train-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          # Ensure we train from a 'train/' folder under the prefix
+          if [[ -z "${PREFIX}" ]]; then
+            echo "Empty prefix from event; defaulting to language-identification/train/"
+            PREFIX="language-identification/train/"
+          elif [[ "${PREFIX}" != *"train/"* ]]; then
+            PREFIX="${PREFIX%/}/train/"
+          fi
+
+          echo "Training input: s3://${BUCKET}/${PREFIX}"
+          echo "Artifacts will go to: $OUTPUT_S3"
+          echo "Execution role: $SM_EXECUTION_ROLE_ARN"
+          echo "Image: $BT_IMAGE"
+
+          aws sagemaker create-training-job \
+            --training-job-name "$JOB_NAME" \
+            --algorithm-specification "TrainingImage=${BT_IMAGE},TrainingInputMode=File" \
+            --role-arn "$SM_EXECUTION_ROLE_ARN" \
+            --input-data-config "[
+              {
+                \"ChannelName\": \"train\",
+                \"ContentType\": \"text/plain\",
+                \"DataSource\": {\"S3DataSource\": {
+                  \"S3DataType\": \"S3Prefix\",
+                  \"S3Uri\": \"s3://${BUCKET}/${PREFIX}\",
+                  \"S3DataDistributionType\": \"FullyReplicated\"
+                }}
+              }
+            ]" \
+            --output-data-config "S3OutputPath=${OUTPUT_S3}" \
+            --resource-config "InstanceType=ml.m5.large,InstanceCount=1,VolumeSizeInGB=20" \
+            --stopping-condition "MaxRuntimeInSeconds=1800" \
+            --hyper-parameters "{
+              \"mode\":\"supervised\",
+              \"epochs\":\"5\",
+              \"min_count\":\"2\"
+            }"
+
+      - name: Wait for training to finish & show details
+        env:
+          JOB_NAME: langid-train-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -e
+          aws sagemaker wait training-job-completed-or-stopped --training-job-name "$JOB_NAME"
+          echo "Training job completed (or stopped). Details:"
+          aws sagemaker describe-training-job --training-job-name "$JOB_NAME"
