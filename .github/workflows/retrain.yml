@@ -1,4 +1,5 @@
 name: retrain-on-new-data
+
 on:
   repository_dispatch:
     types: [s3-data-arrived]   # must match what Lambda sends
@@ -11,6 +12,7 @@ jobs:
       contents: read
     env:
       AWS_REGION: us-east-1
+
     steps:
       - uses: actions/checkout@v4
 
@@ -20,23 +22,22 @@ jobs:
           role-to-assume: arn:aws:iam::251345874268:role/GitHubOIDC-MLops
           aws-region: ${{ env.AWS_REGION }}
 
+      # Optional: Python deps (not required for just 'aws s3 ls', but harmless)
       - name: Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install "sagemaker==2.*" "boto3==1.*" "awscli==1.*"
+          pip install "boto3==1.*" "awscli==1.*"
 
-      # Optional: pass S3 prefix from the repo-dispatch payload
+      # Show the payload we received from Lambda
       - name: Show payload
         run: |
-          echo "S3_PREFIX=${{ github.event.client_payload.s3_prefix }}"
           echo "S3_BUCKET=${{ github.event.client_payload.s3_bucket }}"
+          echo "S3_PREFIX=${{ github.event.client_payload.s3_prefix }}"
 
-      - name: Kick off SageMaker Pipeline
+      #  Option B: simple S3 smoke test (no pipelines/run.py)
+      - name: Smoke test S3 (list files under prefix)
         run: |
-          python pipelines/run.py --input-s3 s3://${{ github.event.client_payload.s3_bucket }}/${{ github.event.client_payload.s3_prefix }}
-
-      # Optional deploy step (blue/green)
-      - name: Deploy new model (optional)
-        if: ${{ success() }}
-        run: |
-          python deploy/update_endpoint.py
+          BUCKET="${{ github.event.client_payload.s3_bucket }}"
+          PREFIX="${{ github.event.client_payload.s3_prefix }}"
+          echo "Listing s3://$BUCKET/$PREFIX"
+          aws s3 ls "s3://$BUCKET/$PREFIX" --recursive
